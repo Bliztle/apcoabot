@@ -57,17 +57,17 @@
         lib,
         ...
       }: let
-        cfgProg = config.programs.parking;
-        cfgSrv = config.services.parking;
+        cfgProg = config.programs.apcoabot;
+        cfgSrv = config.services.apcoabot;
         pkg = self.packages.${config.nixpkgs.system}.default;
       in {
         ####### CLI program option #########################################################
-        options.programs.apcoabot.enable = lib.mkEnableOption "Install parking-confirm CLI tool";
+        options.programs.apcoabot.enable = lib.mkEnableOption "Install the apcoabot cli";
 
         config.environment.systemPackages = lib.mkIf cfgProg.enable [pkg];
 
         ####### Systemd service options ###################################################
-        options.services.parking = {
+        options.services.apcoabot = {
           enable = lib.mkEnableOption "Daily parking confirmation service";
 
           startTime = lib.mkOption {
@@ -80,6 +80,11 @@
             type = lib.types.str;
             description = "Vehicle registration plate";
           };
+
+          phoneNumber = lib.mkOption {
+            type = lib.types.str;
+            description = "Phonenumber for confirmation SMS";
+          };
         };
 
         ####### Systemd service + timer ###################################################
@@ -87,7 +92,7 @@
           services.apcoabot = {
             description = "Send daily parking confirmation";
             serviceConfig = {
-              ExecStart = "${pkg}/bin/parking-confirm ${cfgSrv.registration}";
+              ExecStart = "${pkg}/bin/apcoabot -r ${cfgSrv.registration} -p ${cfgSrv.phoneNumber}";
             };
           };
 
