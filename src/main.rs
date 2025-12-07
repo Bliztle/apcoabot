@@ -5,7 +5,7 @@
 //! hours of parking at a selection of pre-implemented parking lots.
 //!
 //! ```sh
-//! apcoabot -r <your registration number> -p <your phone number>
+//! apcoabot -r <your registration> -p <your phone number>
 //! ```
 //!
 //! These are the currently supported parking lots:
@@ -14,10 +14,13 @@
 //! | Selma Lagerløfsvej 249 | Cassiopeia |
 
 use anyhow::Result;
+// use bon::Builder;
 use clap::Parser;
+use derive_builder::Builder;
 use log::{debug, error, info};
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::fs;
 use std::time::{Duration, SystemTime};
 
 /// Command-line arguments for parking-cli
@@ -27,15 +30,32 @@ struct Args {
     /// Vehicle registration. Should correspond with the license plate of the vehicle you intend to
     /// park.
     #[arg(short = 'r', long = "registration")]
-    registration: String,
+    registration: Option<String>,
 
     /// Phone number to send confirmation to. Should include county code but no '+'. Fx 45<your
     /// number> for denmark
     #[arg(short = 'p', long = "phonenumber")]
-    phone_number: String,
+    phone_number: Option<String>,
+
+    /// Path to apcoa configuration file
+    #[arg(long = "config")]
+    config: Option<String>,
 
     /// Dry run. Performs all actinos up to but excluding sending the confirmation request
     #[arg(long = "dry-run")]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct JsonConfig {
+    registration: Option<String>,
+    phone_number: Option<String>,
+}
+
+#[derive(Debug, Builder)]
+struct Config {
+    registration: String,
+    phone_number: String,
     dry_run: bool,
 }
 
@@ -104,19 +124,52 @@ const CASSIOPEIA_AREA_ID: u32 = 1956;
 const CASSIOPEIA_AREA_KEY: &str = "ADK-4688";
 const CASSIOPEIA_ADDRESS: &str = "Selma Lagerløfsvej 249";
 
+/// Reads the configuration from args and config file
+fn get_config(args: Args) -> Result<Config> {
+    let mut builder = ConfigBuilder::default();
+    if let Some(path) = args.config {
+        info!("Reading configuration file");
+        debug!("{}", path);
+        let raw_content = fs::read_to_string(path)?;
+        let json_config: JsonConfig = serde_json::from_str(&raw_content)?;
+        debug!("{:?}", json_config);
+
+        if let Some(registration) = json_config.registration {
+            builder.registration(registration);
+        }
+        if let Some(phone_number) = json_config.phone_number {
+            builder.phone_number(phone_number);
+        }
+    }
+
+    if let Some(registration) = args.registration {
+        builder.registration(registration);
+    }
+    if let Some(phone_number) = args.phone_number {
+        builder.phone_number(phone_number);
+    }
+
+    let config = builder.dry_run(args.dry_run).build()?;
+    debug!("{:?}", config);
+
+    Ok(config)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
 
-    // Parse CLI args
     let args = Args::parse();
+    let config = get_config(args)?;
 
     info!(
         "Running apcoabot-cli {}",
-        if args.dry_run { "in dry-run mode" } else { "" }
+        if config.dry_run {
+            "in dry-run mode"
+        } else {
+            ""
+        }
     );
-    debug!("registration = {}", args.registration);
-    debug!("phone_number = +{}", args.phone_number);
 
     // Compute timestamps
     let now = SystemTime::now();
@@ -128,10 +181,10 @@ async fn main() -> Result<()> {
     // Build request body
     let body = ConfirmRequestBody {
         email: "".into(),
-        phone_number: args.phone_number,
+        phone_number: config.phone_number,
         vehicle_registration_country: "DK".into(),
         duration: CASSIOPEIA_DURATION,
-        vehicle_registration: args.registration,
+        vehicle_registration: config.registration,
         parking_areas: vec![ParkingArea {
             id: 0,
             discount_id: 0,
@@ -156,7 +209,7 @@ async fn main() -> Result<()> {
         .build()?;
     debug!("request = {:?}", request);
 
-    if args.dry_run {
+    if config.dry_run {
         info!("Dry run complete");
         return Ok(());
     }

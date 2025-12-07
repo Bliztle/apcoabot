@@ -61,47 +61,80 @@
         cfgSrv = config.services.apcoabot;
         pkg = self.packages.${config.nixpkgs.system}.default;
       in {
-        ####### CLI program option #########################################################
-        options.programs.apcoabot.enable = lib.mkEnableOption "Install the apcoabot cli";
+        options = {
+          ####### CLI program option #########################################################
+          programs.apcoabot.enable = lib.mkEnableOption "Install the apcoabot cli";
 
-        config.environment.systemPackages = lib.mkIf cfgProg.enable [pkg];
-
-        ####### Systemd service options ###################################################
-        options.services.apcoabot = {
-          enable = lib.mkEnableOption "Daily parking confirmation service";
-
-          startTime = lib.mkOption {
-            type = lib.types.str;
-            default = "07:45";
-            description = "When to run the confirmation (systemd OnCalendar format)";
-          };
-
-          registration = lib.mkOption {
-            type = lib.types.str;
-            description = "Vehicle registration plate";
-          };
-
-          phoneNumber = lib.mkOption {
-            type = lib.types.str;
-            description = "Phonenumber for confirmation SMS";
-          };
-        };
-
-        ####### Systemd service + timer ###################################################
-        config.systemd = lib.mkIf cfgSrv.enable {
+          ####### Systemd service options ###################################################
           services.apcoabot = {
-            description = "Send daily parking confirmation";
-            serviceConfig = {
-              ExecStart = "${pkg}/bin/apcoabot -r ${cfgSrv.registration} -p ${cfgSrv.phoneNumber}";
+            enable = lib.mkEnableOption "Daily parking confirmation service";
+
+            startTime = lib.mkOption {
+              type = lib.types.str;
+              default = "07:45";
+              description = "When to run the confirmation (systemd OnCalendar format)";
+            };
+
+            registration = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Vehicle registration plate";
+            };
+
+            phoneNumber = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Phone number for confirmation SMS";
+            };
+
+            configFile = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Configuration file containing apcoabot options. Explicit options take priority.";
             };
           };
+        };
+        config = {
+          environment.systemPackages = lib.mkIf cfgProg.enable [pkg];
 
-          timers.apcoabot = {
-            description = "Timer for parking confirmation";
-            wantedBy = ["timers.target"];
-            timerConfig = {
-              OnCalendar = cfgSrv.startTime;
-              Persistent = true;
+          ####### Assertions ###############################################################
+          assertions = lib.mkIf cfgSrv.enable [
+            {
+              assertion =
+                cfgSrv.configFile
+                != null
+                || (cfgSrv.registration != null && cfgSrv.phoneNumber != null);
+              message = ''
+                apcoabot: You must set either:
+                  • services.apcoabot.configFile
+                  OR
+                  • services.apcoabot.registration AND services.apcoabot.phoneNumber
+              '';
+            }
+          ];
+
+          ####### Systemd service + timer ###################################################
+          systemd = lib.mkIf cfgSrv.enable {
+            services.apcoabot = {
+              description = "Send daily parking confirmation";
+
+              serviceConfig = {
+                ExecStart = ''
+                  ${pkg}/bin/apcoabot \
+                    ${lib.optionalString (cfgSrv.configFile != null) "--config ${cfgSrv.configFile}"} \
+                    ${lib.optionalString (cfgSrv.registration != null) "-r ${cfgSrv.registration}"} \
+                    ${lib.optionalString (cfgSrv.phoneNumber != null) "-p ${cfgSrv.phoneNumber}"}
+                '';
+              };
+            };
+
+            timers.apcoabot = {
+              description = "Timer for parking confirmation";
+              wantedBy = ["timers.target"];
+              timerConfig = {
+                OnCalendar = cfgSrv.startTime;
+                Persistent = true;
+              };
             };
           };
         };

@@ -5,10 +5,13 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+bon = "3.8.1"
 chrono = "0.4.42"
 clap = { version = "4.5.53", features = ["derive"] }
+derive_builder = "0.20.2"
 env_logger = "0.11.8"
 log = "0.4.29"
 reqwest = { version = "0.12.24", features = ["json"] }
 serde = "1.0.228"
+serde_json = "1.0.145"
 tokio = { version = "1.48.0", features = ["full"] }
