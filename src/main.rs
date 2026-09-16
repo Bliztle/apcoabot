@@ -8,15 +8,24 @@
 //! apcoabot -r <your registration> -p <your phone number>
 //! ```
 //!
+//! Alternatively, pass `--config config.json` to register multiple phone and vehicle pairs:
+//!
+//! ```json
+//! {"registrations": [
+//!   {"registration": "AB12345", "phone_number": "4512345678"},
+//!   {"registration": "CD67890", "phone_number": "4587654321"}
+//! ]}
+//! ```
+//!
+//! Supplying both `-r` and `-p` overrides the config file's registrations.
+//!
 //! These are the currently supported parking lots:
 //!
-//! | Address                | Name       |
-//! | Selma Lagerløfsvej 249 | Cassiopeia |
+//! | Address                | Name       | Note                                  |
+//! | Selma Lagerløfsvej 249 | Cassiopeia | Covers Selma Lagerløfsvej 249 and 300 |
 
-use anyhow::Result;
-// use bon::Builder;
+use anyhow::{Result, ensure};
 use clap::Parser;
-use derive_builder::Builder;
 use log::{debug, error, info};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -32,8 +41,8 @@ struct Args {
     #[arg(short = 'r', long = "registration")]
     registration: Option<String>,
 
-    /// Phone number to send confirmation to. Should include county code but no '+'. Fx 45<your
-    /// number> for denmark
+    /// Phone number to send confirmation to. Should include county code but no '+'. Fx
+    /// 45<your_number> for denmark
     #[arg(short = 'p', long = "phonenumber")]
     phone_number: Option<String>,
 
@@ -41,21 +50,25 @@ struct Args {
     #[arg(long = "config")]
     config: Option<String>,
 
-    /// Dry run. Performs all actinos up to but excluding sending the confirmation request
+    /// Dry run. Performs all actions up to but excluding sending the confirmation request
     #[arg(long = "dry-run")]
     dry_run: bool,
 }
 
 #[derive(Debug, Deserialize)]
 struct JsonConfig {
-    registration: Option<String>,
-    phone_number: Option<String>,
+    registrations: Vec<Registration>,
 }
 
-#[derive(Debug, Builder)]
-struct Config {
+#[derive(Debug, Deserialize)]
+struct Registration {
     registration: String,
     phone_number: String,
+}
+
+#[derive(Debug)]
+struct Config {
+    registrations: Vec<Registration>,
     dry_run: bool,
 }
 
@@ -63,16 +76,22 @@ struct Config {
 struct ParkingArea {
     #[serde(rename = "Id")]
     id: u32,
+
     #[serde(rename = "DiscountId")]
     discount_id: u32,
+
     #[serde(rename = "ParkingAreaId")]
     parking_area_id: u32,
+
     #[serde(rename = "ParkingAreaKey")]
     parking_area_key: String,
+
     #[serde(rename = "Address")]
     address: String,
+
     #[serde(rename = "Added")]
     added: String,
+
     #[serde(rename = "Removed")]
     removed: Option<String>,
 }
@@ -126,30 +145,28 @@ const CASSIOPEIA_ADDRESS: &str = "Selma Lagerløfsvej 249";
 
 /// Reads the configuration from args and config file
 fn get_config(args: Args) -> Result<Config> {
-    let mut builder = ConfigBuilder::default();
-    if let Some(path) = args.config {
-        info!("Reading configuration file");
-        debug!("{}", path);
-        let raw_content = fs::read_to_string(path)?;
-        let json_config: JsonConfig = serde_json::from_str(&raw_content)?;
-        debug!("{:?}", json_config);
-
-        if let Some(registration) = json_config.registration {
-            builder.registration(registration);
+    let registrations = match (args.registration, args.phone_number) {
+        (Some(registration), Some(phone_number)) => vec![Registration {
+            registration,
+            phone_number,
+        }],
+        (None, None) => {
+            let path = args.config.ok_or_else(|| {
+                anyhow::anyhow!("Provide --config or both --registration and --phonenumber")
+            })?;
+            info!("Reading configuration file");
+            debug!("{}", path);
+            let raw_content = fs::read_to_string(path)?;
+            let json_config: JsonConfig = serde_json::from_str(&raw_content)?;
+            json_config.registrations
         }
-        if let Some(phone_number) = json_config.phone_number {
-            builder.phone_number(phone_number);
-        }
-    }
-
-    if let Some(registration) = args.registration {
-        builder.registration(registration);
-    }
-    if let Some(phone_number) = args.phone_number {
-        builder.phone_number(phone_number);
-    }
-
-    let config = builder.dry_run(args.dry_run).build()?;
+        _ => anyhow::bail!("--registration and --phonenumber must be supplied together"),
+    };
+    ensure!(!registrations.is_empty(), "registrations must not be empty");
+    let config = Config {
+        registrations,
+        dry_run: args.dry_run,
+    };
     debug!("{:?}", config);
 
     Ok(config)
@@ -171,6 +188,25 @@ async fn main() -> Result<()> {
         }
     );
 
+    let client = Client::new();
+    for registration in config.registrations {
+        send_registration(&client, registration, config.dry_run).await?;
+    }
+
+    if config.dry_run {
+        info!("Dry run complete");
+    }
+
+    Ok(())
+}
+
+async fn send_registration(
+    client: &Client,
+    registration: Registration,
+    dry_run: bool,
+) -> Result<()> {
+    info!("Processing registration {}", registration.registration);
+
     // Compute timestamps
     let now = SystemTime::now();
     let end = now + Duration::from_secs(10 * 60 * 60);
@@ -181,10 +217,10 @@ async fn main() -> Result<()> {
     // Build request body
     let body = ConfirmRequestBody {
         email: "".into(),
-        phone_number: config.phone_number,
+        phone_number: registration.phone_number,
         vehicle_registration_country: "DK".into(),
         duration: CASSIOPEIA_DURATION,
-        vehicle_registration: config.registration,
+        vehicle_registration: registration.registration,
         parking_areas: vec![ParkingArea {
             id: 0,
             discount_id: 0,
@@ -200,7 +236,6 @@ async fn main() -> Result<()> {
         lang: "da".into(),
     };
 
-    let client = Client::new();
     let request = client
         .post(CONFIRM_URI)
         .header("Content-Type", "application/json")
@@ -209,8 +244,7 @@ async fn main() -> Result<()> {
         .build()?;
     debug!("request = {:?}", request);
 
-    if config.dry_run {
-        info!("Dry run complete");
+    if dry_run {
         return Ok(());
     }
 
