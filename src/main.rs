@@ -8,16 +8,19 @@
 //! apcoabot -r <your registration> -p <your phone number>
 //! ```
 //!
+//! Optionally add `-e <your email>` (or `--email <your email>`) for email confirmation.
+//!
 //! Alternatively, pass `--config config.json` to register multiple phone and vehicle pairs:
 //!
 //! ```json
 //! {"registrations": [
-//!   {"registration": "AB12345", "phone_number": "4512345678"},
+//!   {"registration": "AB12345", "phone_number": "4512345678", "email": "driver@example.com"},
 //!   {"registration": "CD67890", "phone_number": "4587654321"}
 //! ]}
 //! ```
 //!
 //! Supplying both `-r` and `-p` overrides the config file's registrations.
+//! Email is optional for each registration; `--email` requires both `-r` and `-p`.
 //!
 //! These are the currently supported parking lots:
 //!
@@ -46,6 +49,10 @@ struct Args {
     #[arg(short = 'p', long = "phonenumber")]
     phone_number: Option<String>,
 
+    /// Optional email address to send confirmation to
+    #[arg(short = 'e', long = "email", requires_all = ["registration", "phone_number"])]
+    email: Option<String>,
+
     /// Path to apcoa configuration file
     #[arg(long = "config")]
     config: Option<String>,
@@ -64,6 +71,7 @@ struct JsonConfig {
 struct Registration {
     registration: String,
     phone_number: String,
+    email: Option<String>,
 }
 
 #[derive(Debug)]
@@ -149,6 +157,7 @@ fn get_config(args: Args) -> Result<Config> {
         (Some(registration), Some(phone_number)) => vec![Registration {
             registration,
             phone_number,
+            email: args.email,
         }],
         (None, None) => {
             let path = args.config.ok_or_else(|| {
@@ -216,7 +225,7 @@ async fn send_registration(
 
     // Build request body
     let body = ConfirmRequestBody {
-        email: "".into(),
+        email: registration.email.unwrap_or_default(),
         phone_number: registration.phone_number,
         vehicle_registration_country: "DK".into(),
         duration: CASSIOPEIA_DURATION,
